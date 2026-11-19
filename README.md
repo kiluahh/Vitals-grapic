@@ -3,6 +3,29 @@ Vitals
 
 Vitals is a GNOME Shell extension for displaying your computer's temperature, voltage, fan speed, memory usage, processor load, system resources, network speed and storage stats in your GNOME Shell's top menu bar. This is a one stop shop to monitor all of your vital sensors. Vitals uses asynchronous polling to provide a smooth user experience.
 
+## This fork
+
+This is an independent fork of [corecoding/Vitals](https://github.com/corecoding/Vitals) focused on panel charts and per-sensor panel controls.
+
+![Panel charts in the top bar](docs/panel-charts.png)
+
+What was added on top of upstream Vitals:
+
+- **Panel charts** — draw a mini chart next to each pinned sensor: **line**, **horizontal battery** or **vertical battery**, or turn charts off.
+- **Display mode** — show the value together with the chart, or draw the chart only.
+- **Per-sensor overrides** — every pinned sensor can set its own chart style, value visibility and color; anything left on *Default* follows the global settings.
+- **Icon / name display** — show the icon, a name, or both. Names are editable; defaults are short and distinct (CPU, RAM, GPU, VRAM, ↓, ↑, …), so GPU and VRAM no longer share the same icon.
+- **Panel font size** — global text size for panel values and names.
+- **Sensors in top bar** — a switch list in the new **Panel** preferences page for every discovered sensor.
+- **Language** — Auto / 中文 / English for the UI added by this fork.
+
+### Installing this fork
+
+    git clone https://github.com/kiluahh/Vitals-grapic.git ~/.local/share/gnome-shell/extensions/Vitals@CoreCoding.com
+    glib-compile-schemas --strict ~/.local/share/gnome-shell/extensions/Vitals@CoreCoding.com/schemas/
+
+Then log out and back in (GNOME caches extension modules per session).
+
 ![How it works](https://raw.githubusercontent.com/corecoding/Vitals/main/howtouse.gif)
 
 ## Installation

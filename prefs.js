@@ -37,6 +37,13 @@ class Settings {
         GObject.type_ensure(Adw.ViewStack.$gtype);
         this.builder.add_from_file(this._extensionObject.path + '/prefs.ui');
 
+        // Language for the strings this fork adds. The rest of the extension keeps
+        // the locale the prefs process started with (GNOME loads catalogs at start).
+        this._rebuildingCombos = false;
+        this._lang = 'en';
+        this._languageChangedId = 0;
+        this._apply_language();
+
         // Threshold color editors are built lazily when each page is first shown,
         // so we do not construct dozens of Gtk.ColorButtons up front.
         // pageName -> { settingsKey, page, addGroup, palettes, addColorsDropdown, ... }
@@ -46,11 +53,26 @@ class Settings {
         this._removedHotSensors = {};
         // pageName -> sorted list of discovered sensor keys (from Sensors.query).
         this._discoveredSensorsByPage = {};
+        // hot-sensor key -> sensor type, for the "Sensors in top bar" selector
+        this._discoveredSensors = new Map();
+        this._panelSensorsGroup = null;
+        this._panelSensorRows = new Map();
+        this._panelSensorsSyncing = false;
+        this._panelOverridesGroup = null;
+        this._panelOverrideRows = [];
+        this._sensorConfigChangedId = 0;
+        this._chartColorChangedId = 0;
+        this._overrideRefreshId = 0;
+        this._hotSensorsChangedId = 0;
         this._sensors = null;
         this._sensorDiscoveryTimeoutId = 0;
         this._bind_sensor_page_gates();
         this._bind_settings();
+        this._build_panel_overrides_group();
+        this._build_panel_sensor_group();
         this._start_sensor_discovery();
+        this._languageChangedId = this._settings.connect('changed::panel-language',
+            () => this._apply_language());
     }
 
     _flatButton({icon_name, label, tooltip_text}) {
@@ -68,6 +90,26 @@ class Settings {
     }
 
     destroy() {
+        if (this._overrideRefreshId) {
+            GLib.source_remove(this._overrideRefreshId);
+            this._overrideRefreshId = 0;
+        }
+        if (this._sensorConfigChangedId) {
+            this._settings.disconnect(this._sensorConfigChangedId);
+            this._sensorConfigChangedId = 0;
+        }
+        if (this._chartColorChangedId) {
+            this._settings.disconnect(this._chartColorChangedId);
+            this._chartColorChangedId = 0;
+        }
+        if (this._languageChangedId) {
+            this._settings.disconnect(this._languageChangedId);
+            this._languageChangedId = 0;
+        }
+        if (this._hotSensorsChangedId) {
+            this._settings.disconnect(this._hotSensorsChangedId);
+            this._hotSensorsChangedId = 0;
+        }
         if (this._sensorDiscoveryTimeoutId) {
             GLib.source_remove(this._sensorDiscoveryTimeoutId);
             this._sensorDiscoveryTimeoutId = 0;
@@ -110,6 +152,9 @@ class Settings {
         if (!key || key.startsWith('__'))
             return;
 
+        if (!this._discoveredSensors.has(key))
+            this._discoveredSensors.set(key, type);
+
         let pageName = colorPageForSensor(type, format);
         if (!pageName)
             return;
@@ -124,8 +169,482 @@ class Settings {
         for (let pageName of Object.keys(this._discoveredSensorsByPage))
             this._discoveredSensorsByPage[pageName].sort();
 
+        this._refresh_panel_sensor_rows();
+
         for (let pageName of Object.keys(this._thresholdColorPages))
             this._sync_add_colors_row(pageName);
+    }
+
+    _system_language() {
+        let locale = GLib.getenv('LANGUAGE') || GLib.getenv('LC_ALL') ||
+            GLib.getenv('LC_MESSAGES') || GLib.getenv('LANG') || '';
+        return locale.toLowerCase().startsWith('zh') ? 'zh' : 'en';
+    }
+
+    _t(zh, en) {
+        return this._lang === 'zh' ? zh : en;
+    }
+
+    _apply_language() {
+        let mode = this._settings.get_int('panel-language');
+        this._lang = (mode === 1) ? 'zh' : (mode === 2) ? 'en' : this._system_language();
+
+        let panelPage = this.builder.get_object('panel-page');
+        if (panelPage)
+            panelPage.set_title(this._t('面板', 'Panel'));
+
+        let sidebarLabel = this.builder.get_object('sidebar-label-panel');
+        if (sidebarLabel)
+            sidebarLabel.set_label(this._t('面板', 'Panel'));
+
+        let appearanceGroup = this.builder.get_object('panel-appearance-group');
+        if (appearanceGroup)
+            appearanceGroup.set_title(this._t('外观', 'Appearance'));
+
+        let chartRow = this.builder.get_object('panel-chart-mode-row');
+        if (chartRow) {
+            chartRow.set_title(this._t('面板图表', 'Panel charts'));
+            chartRow.set_subtitle(this._t('在固定传感器旁显示迷你历史图',
+                'Mini history chart next to pinned sensors'));
+        }
+
+        this._rebuildingCombos = true;
+        try {
+            let chartCombo = this.builder.get_object('panel-chart-mode');
+            if (chartCombo) {
+                let chartMode = this._settings.get_int('panel-chart-mode');
+                chartCombo.remove_all();
+                chartCombo.append_text(this._t('关闭', 'Off'));
+                chartCombo.append_text(this._t('折线图', 'Line'));
+                chartCombo.append_text(this._t('横向电池', 'Horizontal battery'));
+                chartCombo.append_text(this._t('纵向电池', 'Vertical battery'));
+                chartCombo.set_active(chartMode);
+            }
+
+            let fontRow = this.builder.get_object('panel-font-size-row');
+            if (fontRow) {
+                fontRow.set_title(this._t('字号', 'Font size'));
+                fontRow.set_subtitle(this._t('面板文字像素大小；0 使用主题默认',
+                    'Panel text size in pixels; 0 uses the theme default'));
+            }
+
+            let valueRow = this.builder.get_object('panel-chart-value-row');
+            if (valueRow) {
+                valueRow.set_title(this._t('显示数字', 'Show value'));
+                valueRow.set_subtitle(this._t('关闭后只画图，不显示数字',
+                    'Hide the number and draw only the chart'));
+            }
+
+            let colorRow = this.builder.get_object('panel-chart-color-row');
+            if (colorRow) {
+                colorRow.set_title(this._t('图表颜色', 'Chart color'));
+                colorRow.set_subtitle(this._t('折线与电池填充的颜色',
+                    'Color of lines and battery fills'));
+            }
+
+            let langRow = this.builder.get_object('panel-language-row');
+            if (langRow) {
+                langRow.set_title(this._t('语言', 'Language'));
+                langRow.set_subtitle(this._t('扩展新增界面的语言',
+                    "Language for this extension's added UI"));
+            }
+
+            let langCombo = this.builder.get_object('panel-language');
+            if (langCombo) {
+                langCombo.remove_all();
+                langCombo.append_text(this._t('自动', 'Auto'));
+                langCombo.append_text('中文');
+                langCombo.append_text('English');
+                langCombo.set_active(mode);
+            }
+        } finally {
+            this._rebuildingCombos = false;
+        }
+
+        if (this._panelOverridesGroup) {
+            this._panelOverridesGroup.set_title(this._t('单传感器图表', 'Per-sensor charts'));
+            this._panelOverridesGroup.set_description(this._t(
+                '分别为每个置顶传感器设置图表、数字和颜色。',
+                'Override chart style, value and color per pinned sensor.'));
+            this._schedule_override_refresh();
+        }
+
+        if (this._panelSensorsGroup) {
+            this._panelSensorsGroup.set_title(this._t('顶栏传感器', 'Sensors in top bar'));
+            this._panelSensorsGroup.set_description(this._t(
+                '选择固定到顶栏的传感器，修改立即生效。',
+                'Choose which sensors are pinned to the panel. Changes apply immediately.'));
+            this._refresh_panel_sensor_rows();
+        }
+    }
+
+    _panel_sensor_category(type) {
+        let base = (type || '').replace('-group', '');
+        if (base.startsWith('gpu'))
+            return this._t('显卡', 'Graphics');
+        if (base.startsWith('network'))
+            return this._t('网络', 'Network');
+        let categories = {
+            'temperature': ['温度', 'Temperature'],
+            'voltage': ['电压', 'Voltage'],
+            'fan': ['风扇', 'Fan'],
+            'processor': ['处理器', 'Processor'],
+            'memory': ['内存', 'Memory'],
+            'storage': ['存储', 'Storage'],
+            'system': ['系统', 'System'],
+            'battery': ['电池', 'Battery'],
+        };
+        let pair = categories[base];
+        return pair ? this._t(pair[0], pair[1]) : base;
+    }
+
+    _sensor_row_title(key) {
+        let label = labelFromSensorKey(key);
+        if (this._lang !== 'zh')
+            return label;
+
+        let replacements = [
+            ['memory usage', '显存使用率'],
+            ['memory used', '已用显存'],
+            ['memory total', '显存总量'],
+            ['memory free', '空闲显存'],
+            ['utilization', '利用率'],
+            ['usage', '使用率'],
+            ['temperature', '温度'],
+            ['frequency', '频率'],
+            [' rx', ' 下行'],
+            [' tx', ' 上行'],
+        ];
+        for (let [from, to] of replacements)
+            label = label.replaceAll(from, to);
+        return label;
+    }
+
+    _build_panel_sensor_group() {
+        if (this._panelSensorsGroup)
+            return;
+
+        let page = this.builder.get_object('panel-page');
+        if (!page)
+            return;
+
+        this._panelSensorsGroup = new Adw.PreferencesGroup({
+            title: this._t('顶栏传感器', 'Sensors in top bar'),
+            description: this._t('选择固定到顶栏的传感器，修改立即生效。',
+                'Choose which sensors are pinned to the panel. Changes apply immediately.'),
+        });
+        page.add(this._panelSensorsGroup);
+
+        this._hotSensorsChangedId = this._settings.connect('changed::hot-sensors', () => {
+            this._sync_panel_sensor_rows();
+            this._schedule_override_refresh();
+        });
+        this._refresh_panel_sensor_rows();
+    }
+
+    _refresh_panel_sensor_rows() {
+        if (!this._panelSensorsGroup)
+            return;
+
+        for (let row of this._panelSensorRows.values())
+            this._panelSensorsGroup.remove(row);
+        this._panelSensorRows.clear();
+
+        let entries = [];
+        for (let [key, type] of this._discoveredSensors)
+            entries.push({key, type});
+
+        // keep already-pinned sensors selectable even if discovery missed them
+        for (let key of this._settings.get_strv('hot-sensors')) {
+            if (key == '_default_icon_' || key.startsWith('__'))
+                continue;
+            if (entries.some(entry => entry.key === key))
+                continue;
+            let typeKey = key.slice(1, key.indexOf('_', 1));
+            entries.push({key, type: typeKey});
+        }
+
+        entries.sort((a, b) => {
+            let category = this._panel_sensor_category(a.type)
+                .localeCompare(this._panel_sensor_category(b.type));
+            if (category)
+                return category;
+            return labelFromSensorKey(a.key).localeCompare(
+                labelFromSensorKey(b.key), undefined, {numeric: true, sensitivity: 'base'});
+        });
+
+        for (let {key, type} of entries) {
+            let row = new Adw.SwitchRow({
+                title: this._sensor_row_title(key),
+                subtitle: this._panel_sensor_category(type),
+            });
+            row.connect('notify::active', () => {
+                if (this._panelSensorsSyncing)
+                    return;
+                this._set_panel_sensor(key, row.active);
+            });
+            this._panelSensorRows.set(key, row);
+            this._panelSensorsGroup.add(row);
+        }
+
+        this._sync_panel_sensor_rows();
+    }
+
+    _sync_panel_sensor_rows() {
+        if (!this._panelSensorsGroup)
+            return;
+
+        this._panelSensorsSyncing = true;
+        try {
+            let hot = new Set(this._settings.get_strv('hot-sensors'));
+            for (let [key, row] of this._panelSensorRows)
+                row.active = hot.has(key);
+        } finally {
+            this._panelSensorsSyncing = false;
+        }
+    }
+
+    _set_panel_sensor(key, enabled) {
+        let hot = this._settings.get_strv('hot-sensors')
+            .filter(sensor => sensor !== '_default_icon_');
+
+        let has = hot.includes(key);
+        if (enabled && !has)
+            hot.push(key);
+        else if (!enabled && has)
+            hot = hot.filter(sensor => sensor !== key);
+
+        if (hot.length == 0)
+            hot = ['_default_icon_'];
+
+        this._settings.set_strv('hot-sensors', hot);
+    }
+
+    _sensor_type_from_key(key) {
+        let end = key.indexOf('_', 1);
+        return end > 1 ? key.slice(1, end) : '';
+    }
+
+    _sensor_short_name(key) {
+        let type = this._sensor_type_from_key(key);
+        let end = key.endsWith('_') ? key.length - 1 : key.length;
+        let label = key.slice(key.indexOf('_', 1) + 1, end).replaceAll('_', ' ');
+
+        if (type === 'processor' || type.startsWith('processor-'))
+            return 'CPU';
+        if (type === 'memory')
+            return 'RAM';
+        if (type.startsWith('gpu'))
+            return /memory/i.test(label) ? 'VRAM' : 'GPU';
+        if (type === 'network-rx')
+            return '↓';
+        if (type === 'network-tx')
+            return '↑';
+        if (type === 'temperature')
+            return '°C';
+        if (type === 'fan')
+            return 'RPM';
+        if (type === 'storage')
+            return 'DISK';
+        if (type === 'battery')
+            return 'BAT';
+        return label || type;
+    }
+
+    _read_sensor_config() {
+        try {
+            let value = JSON.parse(this._settings.get_string('panel-sensor-config') || '{}');
+            if (value && typeof value === 'object' && !Array.isArray(value))
+                return value;
+        } catch (e) { }
+        return {};
+    }
+
+    _set_sensor_override(key, patch) {
+        let config = this._read_sensor_config();
+        let entry = Object.assign({}, config[key] || {});
+
+        for (let [name, value] of Object.entries(patch)) {
+            if (value === null || value === undefined)
+                delete entry[name];
+            else
+                entry[name] = value;
+        }
+
+        if (Object.keys(entry).length)
+            config[key] = entry;
+        else
+            delete config[key];
+
+        this._settings.set_string('panel-sensor-config', JSON.stringify(config));
+    }
+
+    _schedule_override_refresh() {
+        if (this._overrideRefreshId)
+            return;
+        this._overrideRefreshId = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+            this._overrideRefreshId = 0;
+            this._refresh_override_rows();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _build_panel_overrides_group() {
+        if (this._panelOverridesGroup)
+            return;
+
+        let page = this.builder.get_object('panel-page');
+        if (!page)
+            return;
+
+        this._panelOverridesGroup = new Adw.PreferencesGroup({
+            title: this._t('单传感器图表', 'Per-sensor charts'),
+            description: this._t('分别为每个置顶传感器设置图表、数字和颜色。',
+                'Override chart style, value and color per pinned sensor.'),
+        });
+        page.add(this._panelOverridesGroup);
+
+        this._sensorConfigChangedId = this._settings.connect('changed::panel-sensor-config',
+            () => this._schedule_override_refresh());
+        this._chartColorChangedId = this._settings.connect('changed::panel-chart-color',
+            () => this._schedule_override_refresh());
+
+        this._refresh_override_rows();
+    }
+
+    _override_combo_row(title, items, selected, onSelected) {
+        let row = new Adw.ComboRow({
+            title,
+            model: Gtk.StringList.new(items),
+        });
+        row.set_selected(selected);
+        row.connect('notify::selected', () => onSelected(row.get_selected()));
+        return row;
+    }
+
+    _refresh_override_rows() {
+        if (!this._panelOverridesGroup)
+            return;
+
+        let expanded = new Set();
+        for (let row of this._panelOverrideRows) {
+            if (row.expanded && row._sensorKey)
+                expanded.add(row._sensorKey);
+            this._panelOverridesGroup.remove(row);
+        }
+        this._panelOverrideRows = [];
+
+        let hot = this._settings.get_strv('hot-sensors')
+            .filter(key => key !== '_default_icon_' && !key.startsWith('__'));
+
+        if (hot.length == 0) {
+            let row = new Adw.ActionRow({
+                title: this._t('没有置顶的传感器', 'No pinned sensors'),
+            });
+            this._panelOverridesGroup.add(row);
+            this._panelOverrideRows.push(row);
+            return;
+        }
+
+        let config = this._read_sensor_config();
+        let globalColor = this._settings.get_string('panel-chart-color');
+
+        for (let key of hot) {
+            let override = config[key] || {};
+            let row = new Adw.ExpanderRow({
+                title: this._sensor_row_title(key),
+                subtitle: this._panel_sensor_category(this._sensor_type_from_key(key)),
+            });
+            row._sensorKey = key;
+            row.expanded = expanded.has(key);
+
+            let styleRow = this._override_combo_row(
+                this._t('图表', 'Chart'),
+                [this._t('默认', 'Default'),
+                 this._t('关闭', 'Off'),
+                 this._t('折线图', 'Line'),
+                 this._t('横向电池', 'Horizontal battery'),
+                 this._t('纵向电池', 'Vertical battery')],
+                Number.isInteger(override.mode) ? override.mode + 1 : 0,
+                selected => this._set_sensor_override(key,
+                    {mode: selected == 0 ? null : selected - 1}));
+
+            let valueRow = this._override_combo_row(
+                this._t('数字', 'Value'),
+                [this._t('默认', 'Default'),
+                 this._t('显示数字', 'Show value'),
+                 this._t('纯图表', 'Chart only')],
+                (typeof override.showValue === 'boolean') ? (override.showValue ? 1 : 2) : 0,
+                selected => this._set_sensor_override(key,
+                    {showValue: selected == 0 ? null : selected == 1}));
+
+            let displayRow = this._override_combo_row(
+                this._t('图标/名字', 'Icon/name'),
+                [this._t('图标', 'Icon'),
+                 this._t('名字', 'Name'),
+                 this._t('图标+名字', 'Icon + name')],
+                override.display === 'name' ? 1 : (override.display === 'both' ? 2 : 0),
+                selected => this._set_sensor_override(key, {
+                    display: selected == 0 ? null : (selected == 1 ? 'name' : 'both'),
+                }));
+
+            let nameRow = new Adw.ActionRow({title: this._t('名字', 'Name')});
+            let nameEntry = new Gtk.Entry({
+                valign: Gtk.Align.CENTER,
+                width_chars: 12,
+                placeholder_text: this._sensor_short_name(key),
+                text: (typeof override.name === 'string') ? override.name : '',
+            });
+            let commitName = () => {
+                let text = nameEntry.get_text().trim();
+                this._set_sensor_override(key, {name: text ? text : null});
+            };
+            nameEntry.connect('activate', commitName);
+            nameEntry.connect('notify::has-focus', () => {
+                if (!nameEntry.has_focus)
+                    commitName();
+            });
+            nameRow.add_suffix(nameEntry);
+
+            let colorRow = new Adw.ActionRow({title: this._t('颜色', 'Color')});
+            let colorButton = new Gtk.ColorButton({valign: Gtk.Align.CENTER});
+            colorButton.set_rgba(this._rgba_from_hex(override.color || globalColor));
+            colorButton.connect('color-set', () => {
+                this._set_sensor_override(key,
+                    {color: this._hex_from_rgba(colorButton.get_rgba())});
+            });
+            let resetButton = this._flatButton({
+                icon_name: 'edit-clear-symbolic',
+                tooltip_text: this._t('跟随全局颜色', 'Use global color'),
+            });
+            resetButton.connect('clicked', () => {
+                this._set_sensor_override(key, {color: null});
+            });
+            colorRow.add_suffix(colorButton);
+            colorRow.add_suffix(resetButton);
+
+            row.add_row(styleRow);
+            row.add_row(valueRow);
+            row.add_row(displayRow);
+            row.add_row(nameRow);
+            row.add_row(colorRow);
+
+            this._panelOverridesGroup.add(row);
+            this._panelOverrideRows.push(row);
+        }
+    }
+
+    _rgba_from_hex(value) {
+        let rgba = new Gdk.RGBA();
+        if (!value || !rgba.parse(value))
+            rgba.parse('#3584e4');
+        return rgba;
+    }
+
+    _hex_from_rgba(rgba) {
+        return '#' + [rgba.red, rgba.green, rgba.blue]
+            .map(value => Math.round(value * 255).toString(16).padStart(2, '0'))
+            .join('');
     }
 
     _apply_icon_style() {
@@ -309,7 +828,8 @@ class Settings {
                         'network-public-ip-show-flag', 'show-battery', 'fixed-widths',
                         'hide-icons', 'menu-centered', 'include-static-info',
                         'include-processor-cores', 'use-processor-cpufreq',
-                        'show-gpu', 'include-static-gpu-info' ];
+                        'show-gpu', 'include-static-gpu-info',
+                        'panel-chart-show-value' ];
 
         for (let key in sensors) {
             let sensor = sensors[key];
@@ -333,7 +853,7 @@ class Settings {
         sensors = [
             'position-in-panel', 'unit', 'network-speed-format', 'network-speed-unit',
             'memory-measurement', 'storage-measurement', 'battery-slot', 'icon-style',
-            'network-public-ip-provider'
+            'panel-chart-mode', 'panel-language', 'network-public-ip-provider'
         ];
         for (let key in sensors) {
             let sensor = sensors[key];
@@ -341,6 +861,8 @@ class Settings {
             widget = this.builder.get_object(sensor);
             widget.set_active(this._settings.get_int(sensor));
             widget.connect('changed', (widget) => {
+                if (this._rebuildingCombos)
+                    return;
                 this._settings.set_int(sensor, widget.get_active());
             });
         }
@@ -354,6 +876,12 @@ class Settings {
         updateTime.set_value(this._settings.get_int('update-time'));
         updateTime.connect('value-changed', (widget) => {
             this._settings.set_int('update-time', Math.round(widget.get_value()));
+        });
+
+        let fontSize = this.builder.get_object('panel-font-size');
+        fontSize.set_value(this._settings.get_int('panel-font-size'));
+        fontSize.connect('value-changed', (widget) => {
+            this._settings.set_int('panel-font-size', Math.round(widget.get_value()));
         });
 
         this._settings.bind('network-public-ip-interval', this.builder.get_object('network-public-ip-interval'),
@@ -373,6 +901,21 @@ class Settings {
                 this._settings.set_string(sensor, text);
             });
         }
+
+        // chart color picker (created in code: Gtk.ColorButton is not builder-friendly here)
+        let colorBox = this.builder.get_object('panel-chart-color-box');
+        let color = new Gdk.RGBA();
+        let colorButton = new Gtk.ColorButton({valign: Gtk.Align.CENTER});
+        if (color.parse(this._settings.get_string('panel-chart-color')))
+            colorButton.set_rgba(color);
+        colorBox.append(colorButton);
+        colorButton.connect('color-set', () => {
+            let rgba = colorButton.get_rgba();
+            let hex = '#' + [rgba.red, rgba.green, rgba.blue]
+                .map(value => Math.round(value * 255).toString(16).padStart(2, '0'))
+                .join('');
+            this._settings.set_string('panel-chart-color', hex);
+        });
 
     }
 
@@ -866,7 +1409,7 @@ export default class VitalsPrefs extends ExtensionPreferences {
         // Replace PreferencesWindow's bottom-tab navigation with the sidebar shell.
         window.get_content().set_child(root);
 
-        let pages = [{ name: 'general' }];
+        let pages = [{ name: 'general' }, { name: 'panel' }];
         for (let name of Object.keys(sensorCatalog))
             pages.push({ name });
         for (let info of pages) {

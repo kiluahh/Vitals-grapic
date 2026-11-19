@@ -19,6 +19,16 @@ import * as SensorCatalog from './helpers/catalog.js';
 
 let vitalsMenu;
 
+// Mini panel charts next to pinned sensors.
+const CHART_POINTS = 32;   // samples kept per sensor
+const CHART_WIDTH = 34;    // logical px, line + horizontal battery
+const CHART_VERTICAL_WIDTH = 10;
+const CHART_HEIGHT = 14;   // logical px
+const CHART_LINE = 1;
+const CHART_HBATTERY = 2;
+const CHART_VBATTERY = 3;
+const CHART_RGBA = [0.208, 0.518, 0.894, 0.9]; // #3584e4 fallback
+
 var VitalsMenuButton = GObject.registerClass({
     GTypeName: 'VitalsMenuButton',
 }, class VitalsMenuButton extends PanelMenu.Button {
@@ -37,6 +47,9 @@ var VitalsMenuButton = GObject.registerClass({
         this._sensorMenuItems = {};
         this._hotLabels = {};
         this._hotItems = {};
+        this._hotCharts = {};
+        this._chartHistory = {};
+        this._chartNetPrev = {};
         this._groups = {};
         this._widths = {};
         this._numGpus = 1;
@@ -75,6 +88,12 @@ var VitalsMenuButton = GObject.registerClass({
             'changed::update-time', this._initializeTimer.bind(this),
             'changed::position-in-panel', this._positionInPanelChanged.bind(this),
             'changed::menu-centered', this._positionInPanelChanged.bind(this),
+            'changed::panel-chart-mode', this._redrawHotSensors.bind(this),
+            'changed::panel-chart-show-value', this._redrawHotSensors.bind(this),
+            'changed::panel-chart-color', this._repaintCharts.bind(this),
+            'changed::panel-font-size', this._redrawHotSensors.bind(this),
+            'changed::panel-sensor-config', this._redrawHotSensors.bind(this),
+            'changed::hot-sensors', this._redrawHotSensors.bind(this),
             this);
 
         let settings = [ 'use-higher-precision', 'alphabetize', 'hide-zeros',
@@ -261,7 +280,10 @@ var VitalsMenuButton = GObject.registerClass({
         this._hotItems[key] = item;
         this._menuLayout.add_child(item);
 
-        if (!this._settings.get_boolean('hide-icons') || key == '_default_icon_') {
+        let displayOptions = this._sensorDisplay(key);
+
+        if (displayOptions.display != 'name' &&
+            (!this._settings.get_boolean('hide-icons') || key == '_default_icon_')) {
             let icon = this._defaultIcon(key);
             if (gicon) icon.gicon = gicon;
             item.add_child(icon);
@@ -270,10 +292,37 @@ var VitalsMenuButton = GObject.registerClass({
         // don't add a label when no sensors are in the panel
         if (key == '_default_icon_') return;
 
+        // optional short name instead of (or next to) the icon
+        if (displayOptions.display != 'icon') {
+            let nameLabel = new St.Label({
+                style_class: 'vitals-panel-name',
+                text: displayOptions.name,
+                style: this._fontStyle(null),
+                y_expand: true,
+                y_align: Clutter.ActorAlign.CENTER
+            });
+            item.add_child(nameLabel);
+        }
+
+        // optional mini chart, drawn from the samples recorded below
+        let chartOptions = this._chartSettings(key);
+        let chartMode = chartOptions.mode;
+        if (chartMode != 0) {
+            let chart = new St.DrawingArea({
+                style_class: 'vitals-panel-chart',
+                width: chartMode == CHART_VBATTERY ? CHART_VERTICAL_WIDTH : CHART_WIDTH,
+                height: CHART_HEIGHT,
+                y_align: Clutter.ActorAlign.CENTER
+            });
+            chart.connect('repaint', () => this._drawChart(chart, key));
+            this._hotCharts[key] = chart;
+            item.add_child(chart);
+        }
+
         let label = new St.Label({
             style_class: 'vitals-panel-label',
             text: (value)?value:'\u2026', // ...
-            style: style || null,
+            style: this._fontStyle(style),
             y_expand: true,
             y_align: Clutter.ActorAlign.CENTER
         });
@@ -286,6 +335,10 @@ var VitalsMenuButton = GObject.registerClass({
 
         // support for fixed widths #55, save label (text) width
         this._widths[key] = label.get_clutter_text().width;
+
+        // chart-only mode: keep the label alive for value updates but hide it
+        if (chartMode != 0 && !chartOptions.showValue)
+            label.hide();
     }
 
     _showHideSensorsChanged(self, sensor) {
@@ -325,9 +378,231 @@ var VitalsMenuButton = GObject.registerClass({
         if (key in this._hotItems) {
             delete this._hotLabels[key];
             delete this._widths[key];
+            delete this._hotCharts[key];
             this._hotItems[key].destroy();
             delete this._hotItems[key];
         }
+    }
+
+    // Record one sample per poll for pinned sensors, normalized to 0..1 for
+    // drawing. Percent values get a fixed 0–100% scale, temperatures 0–100 °C,
+    // everything else (network rates, byte counters, …) scales to the window max.
+    _recordChartSample(key, value, type, format, dwell) {
+        if (this._chartSettings(key).mode == 0 ||
+            !(key in this._hotCharts))
+            return;
+
+        let numeric = (typeof value === 'number') ? value : Number(value);
+        if (!Number.isFinite(numeric))
+            return;
+
+        let mode = 'auto';
+        let sample = numeric;
+
+        if (type === 'network-rx' || type === 'network-tx') {
+            // sensors report a byte counter; plot the rate since the last poll
+            let previous = this._chartNetPrev[key];
+            sample = (previous !== undefined && numeric >= previous && dwell > 0)
+                ? (numeric - previous) / dwell
+                : 0;
+            this._chartNetPrev[key] = numeric;
+        } else if (format === 'percent') {
+            sample = Math.max(0, Math.min(1, numeric));
+            mode = 'fixed';
+        } else if (format === 'temp') {
+            sample = Math.max(0, Math.min(100, numeric / 1000)) / 100;
+            mode = 'fixed';
+        }
+
+        let history = this._chartHistory[key];
+        if (!history || history.mode !== mode)
+            history = this._chartHistory[key] = { mode, data: [] };
+
+        history.data.push(sample);
+        if (history.data.length > CHART_POINTS)
+            history.data.splice(0, history.data.length - CHART_POINTS);
+
+        this._hotCharts[key].queue_repaint();
+    }
+
+    _drawChart(area, key) {
+        let cr = area.get_context();
+        try {
+            let [width, height] = area.get_surface_size();
+            let history = this._chartHistory[key];
+            let data = history ? history.data : [];
+            if (width <= 0 || height <= 0 || data.length == 0)
+                return;
+
+            let values;
+            if (history.mode === 'fixed') {
+                values = data;
+            } else {
+                let max = Math.max(...data);
+                if (!(max > 0))
+                    max = 1;
+                values = data.map(value => Math.max(0, Math.min(1, value / max)));
+            }
+
+            let slot = width / CHART_POINTS;
+            let chartOptions = this._chartSettings(key);
+            let mode = chartOptions.mode;
+            let chartColor = this._chartRGBA(chartOptions.color);
+
+            if (mode == CHART_LINE) {
+                cr.setSourceRGBA(...chartColor);
+                cr.setLineWidth(1.5);
+                let x = (CHART_POINTS - values.length) * slot;
+                if (values.length == 1) {
+                    cr.arc(x, height - values[0] * height, 1.2, 0, 2 * Math.PI);
+                    cr.fill();
+                    return;
+                }
+                cr.moveTo(x, height - values[0] * height);
+                for (let i = 1; i < values.length; i++) {
+                    x += slot;
+                    cr.lineTo(x, height - values[i] * height);
+                }
+                cr.stroke();
+            } else if (mode == CHART_HBATTERY) {
+                // horizontal battery-style gauge of the latest sample
+                let value = Math.max(0, Math.min(1, values[values.length - 1]));
+                let barHeight = Math.min(height, 10);
+                let y = (height - barHeight) / 2;
+                let radius = barHeight / 2;
+
+                // empty track
+                cr.setSourceRGBA(0.5, 0.5, 0.5, 0.28);
+                this._roundRect(cr, 0, y, width, barHeight, radius);
+                cr.fill();
+
+                // filled part
+                if (value > 0) {
+                    let fillWidth = Math.max(barHeight, width * value);
+                    cr.setSourceRGBA(...chartColor);
+                    this._roundRect(cr, 0, y, fillWidth, barHeight, radius);
+                    cr.fill();
+                }
+            } else if (mode == CHART_VBATTERY) {
+                // vertical battery-style gauge, filled from the bottom
+                let value = Math.max(0, Math.min(1, values[values.length - 1]));
+                let barWidth = Math.min(width, 8);
+                let x = (width - barWidth) / 2;
+                let radius = barWidth / 2;
+
+                cr.setSourceRGBA(0.5, 0.5, 0.5, 0.28);
+                this._roundRect(cr, x, 0, barWidth, height, radius);
+                cr.fill();
+
+                if (value > 0) {
+                    let fillHeight = Math.max(barWidth, height * value);
+                    cr.setSourceRGBA(...chartColor);
+                    this._roundRect(cr, x, height - fillHeight, barWidth,
+                        fillHeight, radius);
+                    cr.fill();
+                }
+            }
+        } finally {
+            cr.$dispose();
+        }
+    }
+
+    _roundRect(cr, x, y, w, h, r) {
+        r = Math.min(r, w / 2, h / 2);
+        cr.newSubPath();
+        cr.arc(x + r, y + r, r, Math.PI, 1.5 * Math.PI);
+        cr.arc(x + w - r, y + r, r, 1.5 * Math.PI, 2 * Math.PI);
+        cr.arc(x + w - r, y + h - r, r, 0, 0.5 * Math.PI);
+        cr.arc(x + r, y + h - r, r, 0.5 * Math.PI, Math.PI);
+        cr.closePath();
+    }
+
+    _sensorConfig() {
+        let raw = this._settings.get_string('panel-sensor-config') || '{}';
+        try {
+            let config = JSON.parse(raw);
+            if (config && typeof config === 'object' && !Array.isArray(config))
+                return config;
+        } catch (e) { }
+        return {};
+    }
+
+    _chartSettings(key) {
+        let config = this._sensorConfig()[key] || {};
+        return {
+            mode: Number.isInteger(config.mode)
+                ? config.mode : this._settings.get_int('panel-chart-mode'),
+            showValue: (typeof config.showValue === 'boolean')
+                ? config.showValue : this._settings.get_boolean('panel-chart-show-value'),
+            color: (typeof config.color === 'string')
+                ? config.color : this._settings.get_string('panel-chart-color'),
+        };
+    }
+
+    _fontStyle(style) {
+        let size = this._settings.get_int('panel-font-size');
+        if (size <= 0)
+            return style || null;
+        return (style ? style + ' ' : '') + `font-size: ${size}px;`;
+    }
+
+    _sensorShortName(key) {
+        if (key == '_default_icon_')
+            return '';
+
+        let type = key.slice(1, key.indexOf('_', 1));
+        let end = key.endsWith('_') ? key.length - 1 : key.length;
+        let label = key.slice(key.indexOf('_', 1) + 1, end).replaceAll('_', ' ');
+
+        if (type === 'processor' || type.startsWith('processor-'))
+            return 'CPU';
+        if (type === 'memory')
+            return 'RAM';
+        if (type.startsWith('gpu'))
+            return /memory/i.test(label) ? 'VRAM' : 'GPU';
+        if (type === 'network-rx')
+            return '↓';
+        if (type === 'network-tx')
+            return '↑';
+        if (type === 'temperature')
+            return '°C';
+        if (type === 'fan')
+            return 'RPM';
+        if (type === 'storage')
+            return 'DISK';
+        if (type === 'battery')
+            return 'BAT';
+        return label || type;
+    }
+
+    _sensorDisplay(key) {
+        let config = this._sensorConfig()[key] || {};
+        let display = (config.display === 'name' || config.display === 'both')
+            ? config.display : 'icon';
+        let name = (typeof config.name === 'string' && config.name.trim())
+            ? config.name.trim() : this._sensorShortName(key);
+        return {display, name};
+    }
+
+    _chartRGBA(value = this._settings.get_string('panel-chart-color')) {
+        value = value || '';
+        let match = value.trim().match(/^#([0-9a-fA-F]{6})([0-9a-fA-F]{2})?$/);
+        if (!match)
+            return CHART_RGBA;
+
+        let hex = match[1];
+        let alpha = match[2] ? parseInt(match[2], 16) / 255 : 0.9;
+        return [
+            parseInt(hex.slice(0, 2), 16) / 255,
+            parseInt(hex.slice(2, 4), 16) / 255,
+            parseInt(hex.slice(4, 6), 16) / 255,
+            alpha,
+        ];
+    }
+
+    _repaintCharts() {
+        for (let chart of Object.values(this._hotCharts))
+            chart.queue_repaint();
     }
 
     _redrawHotSensors() {
@@ -379,7 +654,7 @@ var VitalsMenuButton = GObject.registerClass({
         let hotLabel = this._hotLabels[key];
         if (hotLabel) {
             hotLabel.set_text(value);
-            hotLabel.style = style;
+            hotLabel.style = this._fontStyle(style);
 
             // support for fixed widths #55
             if (this._settings.get_boolean('fixed-widths')) {
@@ -443,8 +718,8 @@ var VitalsMenuButton = GObject.registerClass({
             }
 
             // this code is called asynchronously - make sure to save it for next round
+            // the changed::hot-sensors handler rebuilds the panel
             this._saveHotSensors(hotSensors);
-            this._redrawHotSensors();
         });
 
         this._sensorMenuItems[key] = item;
@@ -605,6 +880,8 @@ var VitalsMenuButton = GObject.registerClass({
                 return;
             }
 
+            this._recordChartSample(key, value, type, format, dwell);
+
             // add/initialize any gpu groups that we haven't added yet
             if (typeKey.startsWith('gpu') && typeKey !== 'gpu#1') {
                 const split = typeKey.split('#');
@@ -665,6 +942,9 @@ var VitalsMenuButton = GObject.registerClass({
 
         this._hotLabels = {};
         this._hotItems = {};
+        this._hotCharts = {};
+        this._chartHistory = {};
+        this._chartNetPrev = {};
         this._sensorMenuItems = {};
 
         super.destroy();

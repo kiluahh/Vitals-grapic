@@ -180,6 +180,39 @@
       <summary>Icon styles</summary>
       <description>Set the style for the displayed sensor icons ('original', 'updated')</description>
     </key>
+    <key type="i" name="panel-chart-mode">
+      <default>0</default>
+      <range min="0" max="3"/>
+      <summary>Panel chart style</summary>
+      <description>Draw a mini chart next to each pinned sensor in the panel: 0 = off, 1 = line chart, 2 = horizontal battery bar, 3 = vertical battery bar.</description>
+    </key>
+    <key type="b" name="panel-chart-show-value">
+      <default>true</default>
+      <summary>Show the numeric value next to charts</summary>
+      <description>When off, pinned sensors with a chart show only the chart, without the numeric value.</description>
+    </key>
+    <key type="s" name="panel-chart-color">
+      <default>'#3584e4'</default>
+      <summary>Panel chart color</summary>
+      <description>Color used to draw panel charts, as #RRGGBB or #RRGGBBAA.</description>
+    </key>
+    <key type="i" name="panel-font-size">
+      <default>0</default>
+      <range min="0" max="24"/>
+      <summary>Panel font size</summary>
+      <description>Font size in pixels for panel sensor values and names. 0 uses the theme default.</description>
+    </key>
+    <key type="s" name="panel-sensor-config">
+      <default>'{}'</default>
+      <summary>Per-sensor panel overrides</summary>
+      <description>JSON object mapping hot-sensor keys to per-sensor overrides: {"mode": 0-3, "showValue": bool, "color": "#RRGGBB", "display": "icon"|"name"|"both", "name": "custom"}. Missing fields fall back to the defaults.</description>
+    </key>
+    <key type="i" name="panel-language">
+      <default>0</default>
+      <range min="0" max="2"/>
+      <summary>Language for the added panel settings</summary>
+      <description>Language used by this fork's added preferences UI: 0 = follow the system locale, 1 = Chinese, 2 = English.</description>
+    </key>
     <key name="temperature-colors" type="as">
       <default>[]</default>
       <summary>Temperature color thresholds</summary>

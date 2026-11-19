@@ -62,6 +62,34 @@
                     </child>
                     <child>
                       <object class="GtkListBoxRow">
+                        <property name="name">panel</property>
+                        <child>
+                          <object class="GtkBox">
+                            <property name="orientation">horizontal</property>
+                            <property name="spacing">12</property>
+                            <property name="margin-start">6</property>
+                            <property name="margin-end">6</property>
+                            <property name="margin-top">4</property>
+                            <property name="margin-bottom">4</property>
+                            <child>
+                              <object class="GtkImage" id="sidebar-icon-panel">
+                                <property name="icon-name">video-display-symbolic</property>
+                                <property name="pixel-size">16</property>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="GtkLabel" id="sidebar-label-panel">
+                                <property name="label" translatable="yes">Panel</property>
+                                <property name="xalign">0</property>
+                                <property name="hexpand">True</property>
+                              </object>
+                            </child>
+                          </object>
+                        </child>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkListBoxRow">
                         <property name="selectable">False</property>
                         <property name="activatable">False</property>
                         <child>
@@ -396,6 +424,12 @@
     <property name="step-increment">1</property>
     <property name="page-increment">10</property>
   </object>
+  <object class="GtkAdjustment" id="panel-font-size-adjustment">
+    <property name="lower">0</property>
+    <property name="upper">24</property>
+    <property name="step-increment">1</property>
+    <property name="page-increment">4</property>
+  </object>
   <object class="GtkAdjustment" id="network-public-ip-interval-adjustment">
     <property name="lower">15</property>
     <property name="upper">1440</property>
@@ -428,6 +462,23 @@
                 <property name="round-digits">0</property>
                 <property name="value-pos">right</property>
                 <property name="adjustment">update-time-adjustment</property>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child>
+          <object class="AdwActionRow" id="panel-language-row">
+            <property name="title" translatable="yes">Language</property>
+            <property name="subtitle" translatable="yes">Language for this extension's added UI</property>
+            <property name="activatable-widget">panel-language</property>
+            <child type="suffix">
+              <object class="GtkComboBoxText" id="panel-language">
+                <property name="valign">center</property>
+                <items>
+                  <item translatable="yes">Auto</item>
+                  <item translatable="yes">中文</item>
+                  <item translatable="yes">English</item>
+                </items>
               </object>
             </child>
           </object>
@@ -546,6 +597,80 @@
         <property name="description" translatable="yes">Feature requests or bugs? Please visit &lt;a href=&quot;https://github.com/corecoding/Vitals/issues&quot;&gt;GitHub&lt;/a&gt;. No warranty, expressed or implied. &lt;a href=&quot;https://corecoding.com/donate.php&quot;&gt;Donate&lt;/a&gt; if you found this useful.</property>
         <property name="margin-start">10</property>
         <property name="margin-end">10</property>
+      </object>
+    </child>
+  </object>
+
+  <object class="AdwPreferencesPage" id="panel-page">
+    <property name="name">panel</property>
+    <property name="title" translatable="yes">Panel</property>
+    <property name="icon-name">video-display-symbolic</property>
+    <child>
+      <object class="AdwPreferencesGroup" id="panel-appearance-group">
+        <property name="title" translatable="yes">Appearance</property>
+        <property name="margin-start">10</property>
+        <property name="margin-end">10</property>
+        <child>
+          <object class="AdwActionRow" id="panel-chart-mode-row">
+            <property name="title" translatable="yes">Panel charts</property>
+            <property name="subtitle" translatable="yes">Mini history chart next to pinned sensors</property>
+            <property name="activatable-widget">panel-chart-mode</property>
+            <child type="suffix">
+              <object class="GtkComboBoxText" id="panel-chart-mode">
+                <property name="valign">center</property>
+                <items>
+                  <item translatable="yes">Off</item>
+                  <item translatable="yes">Line</item>
+                  <item translatable="yes">Horizontal battery</item>
+                  <item translatable="yes">Vertical battery</item>
+                </items>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child>
+          <object class="AdwActionRow" id="panel-font-size-row">
+            <property name="title" translatable="yes">Font size</property>
+            <property name="subtitle" translatable="yes">Panel text size in pixels; 0 uses the theme default</property>
+            <property name="activatable">False</property>
+            <child type="suffix">
+              <object class="GtkScale" id="panel-font-size">
+                <property name="orientation">horizontal</property>
+                <property name="valign">center</property>
+                <property name="hexpand">True</property>
+                <property name="width-request">150</property>
+                <property name="draw-value">True</property>
+                <property name="digits">0</property>
+                <property name="round-digits">0</property>
+                <property name="value-pos">right</property>
+                <property name="adjustment">panel-font-size-adjustment</property>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child>
+          <object class="AdwActionRow" id="panel-chart-value-row">
+            <property name="title" translatable="yes">Show value</property>
+            <property name="subtitle" translatable="yes">Hide the number and draw only the chart</property>
+            <property name="activatable-widget">panel-chart-show-value</property>
+            <child type="suffix">
+              <object class="GtkSwitch" id="panel-chart-show-value">
+                <property name="valign">center</property>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child>
+          <object class="AdwActionRow" id="panel-chart-color-row">
+            <property name="title" translatable="yes">Chart color</property>
+            <property name="subtitle" translatable="yes">Color of lines and battery fills</property>
+            <child type="suffix">
+              <object class="GtkBox" id="panel-chart-color-box">
+                <property name="valign">center</property>
+              </object>
+            </child>
+          </object>
+        </child>
       </object>
     </child>
   </object>

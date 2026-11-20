@@ -16,6 +16,7 @@ import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/ex
 import * as Values from './values.js';
 import * as MenuItem from './menuItem.js';
 import * as SensorCatalog from './helpers/catalog.js';
+import {drawBattery} from './helpers/gauge.js';
 
 let vitalsMenu;
 
@@ -464,57 +465,14 @@ var VitalsMenuButton = GObject.registerClass({
                     cr.lineTo(x, height - values[i] * height);
                 }
                 cr.stroke();
-            } else if (mode == CHART_HBATTERY) {
-                // horizontal battery-style gauge of the latest sample
+            } else if (mode == CHART_HBATTERY || mode == CHART_VBATTERY) {
+                // battery-style gauge of the latest sample
                 let value = Math.max(0, Math.min(1, values[values.length - 1]));
-                let barHeight = Math.min(height, 10);
-                let y = (height - barHeight) / 2;
-                let radius = barHeight / 2;
-
-                // empty track
-                cr.setSourceRGBA(0.5, 0.5, 0.5, 0.28);
-                this._roundRect(cr, 0, y, width, barHeight, radius);
-                cr.fill();
-
-                // filled part
-                if (value > 0) {
-                    let fillWidth = Math.max(barHeight, width * value);
-                    cr.setSourceRGBA(...chartColor);
-                    this._roundRect(cr, 0, y, fillWidth, barHeight, radius);
-                    cr.fill();
-                }
-            } else if (mode == CHART_VBATTERY) {
-                // vertical battery-style gauge, filled from the bottom
-                let value = Math.max(0, Math.min(1, values[values.length - 1]));
-                let barWidth = Math.min(width, 8);
-                let x = (width - barWidth) / 2;
-                let radius = barWidth / 2;
-
-                cr.setSourceRGBA(0.5, 0.5, 0.5, 0.28);
-                this._roundRect(cr, x, 0, barWidth, height, radius);
-                cr.fill();
-
-                if (value > 0) {
-                    let fillHeight = Math.max(barWidth, height * value);
-                    cr.setSourceRGBA(...chartColor);
-                    this._roundRect(cr, x, height - fillHeight, barWidth,
-                        fillHeight, radius);
-                    cr.fill();
-                }
+                drawBattery(cr, width, height, value, chartColor, mode == CHART_VBATTERY);
             }
         } finally {
             cr.$dispose();
         }
-    }
-
-    _roundRect(cr, x, y, w, h, r) {
-        r = Math.min(r, w / 2, h / 2);
-        cr.newSubPath();
-        cr.arc(x + r, y + r, r, Math.PI, 1.5 * Math.PI);
-        cr.arc(x + w - r, y + r, r, 1.5 * Math.PI, 2 * Math.PI);
-        cr.arc(x + w - r, y + h - r, r, 0, 0.5 * Math.PI);
-        cr.arc(x + r, y + h - r, r, 0.5 * Math.PI, Math.PI);
-        cr.closePath();
     }
 
     _sensorConfig() {

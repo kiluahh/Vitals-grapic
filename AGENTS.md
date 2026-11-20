@@ -50,6 +50,8 @@ GJS caches loaded modules. **Code changes require a new gnome-shell process**, n
 - X11: Alt+F2 → `restart`, then enable. Wayland sessions cannot restart in-place; log out.
 - Logs: `journalctl -f -o cat /usr/bin/gnome-shell`. Use `console.debug` / `warn` / `error`; keep volume low (journal is system-wide). `SHELL_DEBUG=backtrace-warnings` adds JS stacks. Looking Glass: Alt+F2 → `lg`.
 
+Panel gauge geometry (`helpers/gauge.js`) has a session-free check that renders with cairo and measures the fill: `gjs -m tests/gauge.test.js`.
+
 Local clone: compile schemas after schema edits (`glib-compile-schemas --strict schemas/`). See README for develop-branch install.
 
 ## Code in this repo
